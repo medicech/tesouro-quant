@@ -3,18 +3,20 @@ import os
 import requests
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
 
-# --- CONFIGURAÇÃO DE CAMINHOS ---
-# Garante que sabemos onde salvar (data/processed)
+# --- AJUSTE DE PATH (CRÍTICO PARA O DEPLOY) ---
+# Isso garante que o Python encontre a pasta 'src' onde quer que esteja rodando
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
-sys.path.append(root_dir)
+sys.path.append(os.path.join(root_dir, "src"))
 
+# Configuração de Diretórios
 try:
     from core.config import DATA_DIR
     PROCESSED_DIR = DATA_DIR / "processed"
 except ImportError:
-    from pathlib import Path
+    # Fallback caso a importação falhe
     DATA_DIR = Path(root_dir) / "data"
     PROCESSED_DIR = DATA_DIR / "processed"
 
@@ -23,6 +25,9 @@ URL_BASE = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odat
 
 def main():
     print("🎈 Iniciando atualização: Boletim Focus (Inflação)...")
+    
+    # Garante que a pasta existe antes de tentar salvar
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
     
     # TRUQUE: Query String manual para garantir %20 em vez de + (Evita Erro 400)
     query = "?$filter=Indicador%20eq%20'IPCA'&$top=100&$orderby=Data%20desc&$format=json"
@@ -55,7 +60,6 @@ def main():
         print(f"📅 Boletim Focus de: {ultima_data_divulgacao.strftime('%d/%m/%Y')}")
         
         # --- SALVAMENTO ---
-        os.makedirs(PROCESSED_DIR, exist_ok=True)
         arquivo_saida = PROCESSED_DIR / "focus_ipca.parquet"
         
         df_recente.to_parquet(arquivo_saida, index=False)
@@ -64,8 +68,11 @@ def main():
         
         # Preview rápido no terminal
         ano_atual = datetime.now().year
-        meta = df_recente[df_recente['DataReferencia'] == ano_atual]['Mediana'].iloc[0]
-        print(f"📊 Preview: IPCA {ano_atual} = {meta}%")
+        try:
+            meta = df_recente[df_recente['DataReferencia'] == ano_atual]['Mediana'].iloc[0]
+            print(f"📊 Preview: IPCA {ano_atual} = {meta}%")
+        except:
+            print(f"📊 Preview: IPCA {ano_atual} não disponível na base.")
 
     except Exception as e:
         print(f"❌ Erro ao buscar Focus: {e}")

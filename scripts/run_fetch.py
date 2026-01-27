@@ -5,19 +5,21 @@ import pandas as pd
 from bs4 import BeautifulSoup # Biblioteca de Raspagem (Scraping)
 from datetime import datetime
 import re
+from pathlib import Path
 
-# --- CONFIGURAÇÃO DE CAMINHOS ---
+# --- AJUSTE DE PATH (CRÍTICO PARA DEPLOY) ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
-sys.path.append(root_dir)
+sys.path.append(os.path.join(root_dir, "src")) # Adiciona pasta src para achar o 'core'
 
 try:
-    from core.config import PROCESSED_DIR
+    from core.config import DATA_DIR
+    PROCESSED_DIR = DATA_DIR / "processed"
 except ImportError:
-    from pathlib import Path
     DATA_DIR = Path(root_dir) / "data"
     PROCESSED_DIR = DATA_DIR / "processed"
 
+# --- FUNÇÕES AUXILIARES ---
 def clean_text(text):
     """Limpa espaços extras e quebras de linha"""
     if not text: return ""
@@ -36,7 +38,6 @@ def parse_taxa(text):
     """Converte 'IPCA + 6,50%' para float 6.50"""
     if not text: return 0.0
     # Pega apenas a parte numérica percentual
-    # Ex: "IPCA + 6,45%" -> pega "6,45"
     match = re.search(r'([\d,]+)%', text)
     if match:
         clean = match.group(1).replace(',', '.')
@@ -52,10 +53,13 @@ def parse_taxa(text):
 def formatar_titulo_oficial(nome_site, vencimento):
     """
     Padroniza o nome do site Investidor10 para o nome Oficial do Tesouro.
-    Lógica baseada no arquivo JS do GitHub.
     """
     nome_site = clean_text(nome_site)
-    ano = vencimento.split('/')[-1] # Pega o ano (2029, 2035...)
+    # Tenta extrair o ano do vencimento (dd/mm/aaaa)
+    try:
+        ano = vencimento.split('/')[-1]
+    except:
+        ano = ""
     
     # Regras de normalização
     if "Selic" in nome_site:
@@ -83,6 +87,9 @@ def formatar_titulo_oficial(nome_site, vencimento):
 def main():
     print("🕵️‍♂️ Iniciando Scraping do Investidor10 (Estratégia Alternativa)...")
     
+    # Garante que a pasta existe
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
+    
     url = "https://investidor10.com.br/tesouro-direto/"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -90,15 +97,13 @@ def main():
 
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status() # Para se der erro 404/500
+        response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # O site usa uma tabela com id="rankigns" (sim, tem um erro de digitação no site deles, igual no JS)
+        # Tenta achar a tabela por ID ou Classe
         table = soup.find('table', {'id': 'rankigns'})
-        
         if not table:
-            # Tenta pegar pela classe se o ID mudar
             table = soup.find('table', {'class': 'table'})
             
         if not table:
@@ -114,20 +119,13 @@ def main():
             cols = tr.find_all('td')
             if len(cols) < 6: continue
             
-            # Mapeamento das colunas do site Investidor10:
-            # 0: ? (icone)
-            # 1: Nome do Título (ex: Tesouro IPCA+ 2029)
-            # 2: Rentabilidade (ex: IPCA + 6,40%)
-            # 3: Investimento Mínimo
-            # 4: Preço Unitário
-            # 5: Vencimento
-            
+            # Mapeamento Investidor10
             nome_bruto = cols[1].get_text()
             rentabilidade_txt = cols[2].get_text()
             preco_txt = cols[4].get_text()
             vencimento_txt = clean_text(cols[5].get_text())
             
-            # Tratamento de Dados
+            # Tratamento
             nome_oficial = formatar_titulo_oficial(nome_bruto, vencimento_txt)
             taxa_compra = parse_taxa(rentabilidade_txt)
             pu_compra = parse_brl(preco_txt)
@@ -137,7 +135,7 @@ def main():
             except:
                 continue
 
-            # Define Indexador
+            # Indexador
             if "IPCA" in nome_oficial: indexador = "IPCA"
             elif "Selic" in nome_oficial: indexador = "SELIC"
             elif "Prefixado" in nome_oficial: indexador = "PREFIXADO"
@@ -149,27 +147,29 @@ def main():
                 "data_base": datetime.now(),
                 "taxa_compra": taxa_compra,
                 "pu_compra": pu_compra,
-                "taxa_venda": 0.0, # Site não fornece taxa de venda fácil
+                "taxa_venda": 0.0,
                 "pu_venda": 0.0,
                 "indexador": indexador,
                 "ano_vencimento": dt_venc.year
             })
 
+        if not dados_processados:
+            print("⚠️ Aviso: Nenhum dado foi processado da tabela.")
+            return
+
         # Cria DataFrame e Salva
         df = pd.DataFrame(dados_processados)
         
-        # Salva o arquivo
-        os.makedirs(PROCESSED_DIR, exist_ok=True)
         hoje_iso = datetime.now().date().isoformat()
         arquivo_saida = PROCESSED_DIR / f"tesouro_catalogo_{hoje_iso}.parquet"
         
         df.to_parquet(arquivo_saida, index=False)
         print(f"💾 Catalogo Atualizado Salvo: {arquivo_saida}")
-        print("\n--- AMOSTRA (INVESTIDOR 10) ---")
-        print(df[['tipo_titulo', 'vencimento', 'taxa_compra']].head())
+        print("\n--- AMOSTRA ---")
+        print(df[['tipo_titulo', 'taxa_compra', 'pu_compra']].head())
 
     except Exception as e:
-        print(f"❌ Erro Crítico: {e}")
+        print(f"❌ Erro Crítico no Scraping: {e}")
 
 if __name__ == "__main__":
     main()

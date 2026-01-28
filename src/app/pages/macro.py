@@ -3,76 +3,48 @@ import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from pathlib import Path
 from datetime import datetime
 
-# --- CONFIGURAÇÃO DE CAMINHOS (BLINDAGEM) ---
+# --- CONFIGURAÇÃO DE CAMINHOS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_dir))) # Volta até a raiz
+root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+possible_roots = [Path(root_dir), Path(os.getcwd()), Path("/mount/src/tesouro-quant")]
 
-# Tenta caminhos diferentes para garantir
-possible_roots = [
-    Path(root_dir),
-    Path(os.getcwd()),
-    Path("/mount/src/tesouro-quant")
-]
-
-# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Macro Intelligence", page_icon="🌐", layout="wide")
+st.markdown("<style>.stApp { background-color: #F0F2F6; }</style>", unsafe_allow_html=True)
 
-st.markdown("""
-<style>
-    .stApp { background-color: #F0F2F6; }
-    .metric-card { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; }
-    .big-num { font-size: 24px; font-weight: bold; color: #002B49; }
-    .sub-text { font-size: 12px; color: #666; }
-</style>
-""", unsafe_allow_html=True)
-
-# --- FUNÇÃO DE CARGA BLINDADA ---
+# --- FUNÇÃO DE CARGA ---
 def carregar_arquivo(nome_arquivo):
-    """Busca o arquivo em todas as pastas possíveis"""
     for root in possible_roots:
         path = root / "data" / "processed" / nome_arquivo
-        if path.exists():
-            return pd.read_parquet(path), path
-        
+        if path.exists(): return pd.read_parquet(path), path
         path_local = Path("data/processed") / nome_arquivo
-        if path_local.exists():
-            return pd.read_parquet(path_local), path_local
-            
+        if path_local.exists(): return pd.read_parquet(path_local), path_local
     return pd.DataFrame(), None
 
-# --- CARGA DE DADOS ---
-# 1. Carrega Focus (Inflação)
-df_focus, path_focus = carregar_arquivo("focus_ipca.parquet")
-
-# 2. Carrega Curva de Juros (Do Catálogo Geral)
-df_titulos, path_titulos = carregar_arquivo("tesouro_catalogo_2026-01-28.parquet") # Tenta data específica
+# --- CARGA DADOS ---
+df_focus, _ = carregar_arquivo("focus_ipca.parquet")
+df_titulos, _ = carregar_arquivo("tesouro_catalogo_2026-01-28.parquet")
 if df_titulos.empty:
+    # Fallback para qualquer catalogo
     try:
-        for root in possible_roots:
-            p = root / "data" / "processed"
-            if p.exists():
-                files = sorted(list(p.glob("tesouro_catalogo_*.parquet")))
-                if files:
-                    df_titulos = pd.read_parquet(files[-1])
-                    break
+        p = Path("data/processed")
+        files = sorted(list(p.glob("tesouro_catalogo_*.parquet")))
+        if files: df_titulos = pd.read_parquet(files[-1])
     except: pass
 
-# --- CORREÇÃO DO ERRO (CÁLCULO DE PRAZO) ---
+# --- PREPARAÇÃO DOS DADOS ---
 if not df_titulos.empty:
-    # Garante tipagem de data
-    if 'vencimento' in df_titulos.columns:
-        df_titulos['vencimento'] = pd.to_datetime(df_titulos['vencimento'])
-    if 'data_base' in df_titulos.columns:
-        df_titulos['data_base'] = pd.to_datetime(df_titulos['data_base'])
-    else:
-        df_titulos['data_base'] = pd.Timestamp.now()
-
-    # Cria a coluna prazo_anos que estava faltando
+    if 'vencimento' in df_titulos.columns: df_titulos['vencimento'] = pd.to_datetime(df_titulos['vencimento'])
+    if 'data_base' in df_titulos.columns: df_titulos['data_base'] = pd.to_datetime(df_titulos['data_base'])
+    else: df_titulos['data_base'] = pd.Timestamp.now()
+    
+    # Cria coluna prazo
     df_titulos['prazo_anos'] = (df_titulos['vencimento'] - df_titulos['data_base']).dt.days / 365.25
+    
+    # Cria rótulo amigável para o filtro
+    df_titulos['label_filtro'] = df_titulos['tipo_titulo'] + " (" + df_titulos['vencimento'].dt.year.astype(str) + ")"
 
 # --- HEADER ---
 c1, c2 = st.columns([1, 5])
@@ -80,99 +52,97 @@ with c1:
     if st.button("⬅ Voltar"): st.switch_page("streamlit_app.py")
 with c2:
     st.title("Macro Intelligence")
-    st.caption("Análise técnica da Estrutura a Termo (ETTJ), Inflação Implícita e Boletim Focus.")
+    st.caption("Análise Estrutural da Curva de Juros e Expectativas.")
 
 # --- TABS ---
 tab1, tab2, tab3 = st.tabs(["📉 Curva de Juros (ETTJ)", "🎈 Breakeven de Inflação", "🔮 Boletim Focus"])
 
-# --- TAB 1: CURVA DE JUROS ---
+# --- TAB 1: CURVA DE JUROS COM FILTROS ---
 with tab1:
     if not df_titulos.empty:
-        # Filtra Pre e IPCA
-        df_curve = df_titulos[df_titulos['indexador'].isin(['PREFIXADO', 'IPCA'])].copy()
+        # --- ÁREA DE FILTROS ---
+        with st.expander("⚙️ Configurações do Gráfico (Filtros)", expanded=True):
+            col_f1, col_f2 = st.columns(2)
+            
+            # 1. Filtro de Indexador
+            all_indexes = df_titulos['indexador'].unique()
+            sel_indexes = col_f1.multiselect("Indexadores", all_indexes, default=['PREFIXADO', 'IPCA'])
+            
+            # 2. Filtro de Títulos Específicos
+            # Filtra primeiro pelo indexador escolhido
+            df_step1 = df_titulos[df_titulos['indexador'].isin(sel_indexes)]
+            all_titles = df_step1['tipo_titulo'].unique()
+            
+            # Sugere padrão: Remove Renda+ e Educa+ para não poluir, deixa só os principais
+            default_titles = [t for t in all_titles if "Renda+" not in t and "Educa+" not in t]
+            
+            sel_titles = col_f2.multiselect("Selecionar Títulos", all_titles, default=default_titles)
         
-        if not df_curve.empty:
-            # AGORA VAI FUNCIONAR POIS CRIAMOS A COLUNA ACIMA
+        # --- GRÁFICO ---
+        # Aplica filtros finais
+        df_chart = df_step1[df_step1['tipo_titulo'].isin(sel_titles)].copy()
+        
+        if not df_chart.empty:
             fig = px.line(
-                df_curve.sort_values('prazo_anos'), 
+                df_chart.sort_values('prazo_anos'), 
                 x="vencimento", 
                 y="taxa_compra", 
                 color="indexador",
+                text="taxa_compra", # Mostra o valor no ponto
                 markers=True,
-                title="Estrutura a Termo da Taxa de Juros (ETTJ)",
-                labels={"taxa_compra": "Taxa (% a.a.)", "vencimento": "Vencimento"},
-                color_discrete_map={"PREFIXADO": "#D32F2F", "IPCA": "#1976D2"}
+                title="Curva de Juros (ETTJ)",
+                color_discrete_map={"PREFIXADO": "#D32F2F", "IPCA": "#1976D2", "SELIC": "#388E3C"}
             )
-            fig.update_layout(hovermode="x unified", height=500)
+            fig.update_traces(textposition="top center", texttemplate='%{text:.2f}%')
+            fig.update_layout(height=550, hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
-            
-            # Data base da curva
-            data_base_str = pd.to_datetime(df_curve['data_base'].max()).strftime('%d/%m/%Y')
-            st.info(f"📅 Data base da Curva: **{data_base_str}**")
         else:
-            st.warning("Dados insuficientes para gerar a curva.")
+            st.warning("Nenhum título selecionado.")
+            
     else:
-        st.error("Não foi possível carregar os dados dos títulos.")
+        st.error("Sem dados de títulos.")
 
 # --- TAB 2: BREAKEVEN ---
 with tab2:
-    st.markdown("### Inflação Implícita (Breakeven)")
-    st.write("Quanto o mercado precifica de inflação futura ao comparar títulos Prefixados vs IPCA+.")
+    st.markdown("### Inflação Implícita")
+    st.info("💡 Diferença de taxa entre Prefixados e IPCA+ de mesmo vencimento.")
     
     if not df_titulos.empty:
-        # Lógica simplificada de Breakeven (Matching por ano aproximado)
-        df_pre = df_titulos[df_titulos['indexador'] == 'PREFIXADO'][['ano_vencimento', 'taxa_compra']].set_index('ano_vencimento')
-        df_ipca = df_titulos[df_titulos['indexador'] == 'IPCA'][['ano_vencimento', 'taxa_compra']].set_index('ano_vencimento')
+        # Lógica simplificada
+        df_pre = df_titulos[df_titulos['indexador'] == 'PREFIXADO'][['ano_vencimento', 'taxa_compra']].groupby('ano_vencimento').mean()
+        df_ipca = df_titulos[df_titulos['indexador'] == 'IPCA'][['ano_vencimento', 'taxa_compra']].groupby('ano_vencimento').mean()
         
-        # Cruzamento (Inner Join nos anos que tem os dois)
         df_break = df_pre.join(df_ipca, lsuffix='_pre', rsuffix='_ipca', how='inner')
-        
-        # Fórmula de Fisher: (1 + Pre) = (1 + Real) * (1 + Implicita)
-        # Implicita = ((1 + Pre) / (1 + Real)) - 1
         df_break['breakeven'] = (((1 + df_break['taxa_compra_pre']/100) / (1 + df_break['taxa_compra_ipca']/100)) - 1) * 100
         
         fig_break = px.bar(
             df_break.reset_index(),
-            x='ano_vencimento',
-            y='breakeven',
-            text_auto='.2f',
-            title="Inflação Implícita por Vencimento",
+            x='ano_vencimento', y='breakeven',
+            text_auto='.2f', title="Inflação Implícita (%)",
             color_discrete_sequence=['#FFA000']
         )
-        fig_break.update_traces(textposition='outside')
-        fig_break.update_yaxes(title="Inflação Implícita (%)")
         st.plotly_chart(fig_break, use_container_width=True)
-    else:
-        st.warning("Sem dados para calcular Breakeven.")
 
-# --- TAB 3: FOCUS ---
+# --- TAB 3: FOCUS (AGORA COM SELIC) ---
 with tab3:
     st.markdown("### Expectativas de Mercado (Banco Central)")
     
     if not df_focus.empty:
-        # Pega a data mais recente do arquivo carregado
-        data_relatorio = pd.to_datetime(df_focus['Data'].max())
-        data_fmt = data_relatorio.strftime('%d/%m/%Y')
-        
-        st.markdown(f"""
-        <div style="background-color: white; padding: 15px; border-radius: 8px; border-left: 5px solid #002B49; margin-bottom: 20px;">
-            <span style="font-size: 12px; font-weight: bold; color: #666; text-transform: uppercase;">Data do Relatório</span><br>
-            <span style="font-size: 28px; font-weight: 800; color: #002B49;">{data_fmt}</span>
-        </div>
-        """, unsafe_allow_html=True)
+        data_rel = pd.to_datetime(df_focus['Data'].max()).strftime('%d/%m/%Y')
+        st.success(f"📅 Relatório Vigente: **{data_rel}**")
         
         try:
-            # Filtra apenas o que interessa
-            df_view = df_focus[df_focus['Indicador'].isin(['IPCA', 'Selic', 'PIB Total', 'Câmbio'])].copy()
-            df_view = df_view[df_view['DataReferencia'].isin([2026, 2027, 2028])] 
+            # Filtra indicadores (Agora Selic vai aparecer se o robô trouxe)
+            df_view = df_focus[df_focus['Indicador'].isin(['IPCA', 'Selic'])].copy()
+            df_view = df_view[df_view['DataReferencia'].isin([2026, 2027, 2028, 2029])]
             
             pivoted = df_view.pivot_table(index='Indicador', columns='DataReferencia', values='Mediana', aggfunc='first')
-            st.dataframe(pivoted.style.format("{:.2f}"), use_container_width=True)
             
-            st.caption("Fonte: API Olinda/Bacen. Mediana das expectativas de mercado.")
-            
+            st.dataframe(
+                pivoted.style.format("{:.2f}%").background_gradient(cmap="Blues", axis=1), 
+                use_container_width=True
+            )
         except Exception as e:
-            st.error(f"Erro ao processar tabela Focus: {e}")
+            st.error(f"Erro na tabela: {e}")
     else:
-        st.error("⚠️ Arquivo do Boletim Focus não encontrado.")
-        st.info("Vá até a Home e clique em 'Forçar Atualização' para baixar os dados.")
+        st.warning("Dados do Focus não encontrados.")

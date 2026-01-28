@@ -17,20 +17,21 @@ except ImportError:
     DATA_DIR = Path(root_dir) / "data"
     PROCESSED_DIR = DATA_DIR / "processed"
 
-# API DO BANCO CENTRAL (SGS - Série 11 - Selic Over)
-URL_SELIC = "http://api.bcb.gov.br/dados/serie/bcdata.sgs.11/dados/ultimos/20?formato=json"
+# URL CORRETA: Série 432 (Meta Selic definida pelo Copom - % a.a.)
+# Antes estava a Série 11 (Selic Diária)
+URL_SELIC_META = "http://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados/ultimos/20?formato=json"
 
 def main():
-    print("🏦 Iniciando Atualização da SELIC...")
+    print("🏦 Iniciando Atualização da META SELIC (Anual)...")
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     
     try:
-        # 1. Baixar Dados
-        response = requests.get(URL_SELIC, timeout=15)
+        # 1. Baixar Dados da Meta
+        response = requests.get(URL_SELIC_META, timeout=15)
         
         if response.status_code != 200:
             print(f"❌ Erro na API do BC: {response.status_code}")
-            sys.exit(1) # FORÇA ERRO
+            sys.exit(1)
             
         data = response.json()
         
@@ -47,12 +48,11 @@ def main():
         ultima_data = df['data'].max()
         ultimo_valor = df.loc[df['data'] == ultima_data, 'valor'].iloc[0]
         
-        print(f"✅ Dados recebidos. Última Selic: {ultimo_valor}% ({ultima_data.strftime('%d/%m/%Y')})")
+        print(f"✅ Dados recebidos. Meta Selic Atual: {ultimo_valor}% a.a. (Vigente desde {ultima_data.strftime('%d/%m/%Y')})")
         
-        # 3. Salvar (Sempre sobrescreve o arquivo meta)
+        # 3. Salvar
         arquivo_saida = PROCESSED_DIR / "selic_meta_sgs.parquet"
         
-        # Remove anterior se existir para garantir
         if arquivo_saida.exists():
             try: os.remove(arquivo_saida)
             except: pass
@@ -62,7 +62,7 @@ def main():
 
     except Exception as e:
         print(f"❌ Erro Crítico Selic: {e}")
-        sys.exit(1) # FORÇA ERRO
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

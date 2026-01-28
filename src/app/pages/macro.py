@@ -38,7 +38,6 @@ def carregar_arquivo(nome_arquivo):
         if path.exists():
             return pd.read_parquet(path), path
         
-        # Tenta data/processed direto (local)
         path_local = Path("data/processed") / nome_arquivo
         if path_local.exists():
             return pd.read_parquet(path_local), path_local
@@ -50,11 +49,8 @@ def carregar_arquivo(nome_arquivo):
 df_focus, path_focus = carregar_arquivo("focus_ipca.parquet")
 
 # 2. Carrega Curva de Juros (Do Catálogo Geral)
-# Precisamos do catálogo para desenhar a curva
 df_titulos, path_titulos = carregar_arquivo("tesouro_catalogo_2026-01-28.parquet") # Tenta data específica
 if df_titulos.empty:
-    # Se não achar com data fixa, tenta achar qualquer um
-    # Logica de busca do mais recente
     try:
         for root in possible_roots:
             p = root / "data" / "processed"
@@ -64,6 +60,19 @@ if df_titulos.empty:
                     df_titulos = pd.read_parquet(files[-1])
                     break
     except: pass
+
+# --- CORREÇÃO DO ERRO (CÁLCULO DE PRAZO) ---
+if not df_titulos.empty:
+    # Garante tipagem de data
+    if 'vencimento' in df_titulos.columns:
+        df_titulos['vencimento'] = pd.to_datetime(df_titulos['vencimento'])
+    if 'data_base' in df_titulos.columns:
+        df_titulos['data_base'] = pd.to_datetime(df_titulos['data_base'])
+    else:
+        df_titulos['data_base'] = pd.Timestamp.now()
+
+    # Cria a coluna prazo_anos que estava faltando
+    df_titulos['prazo_anos'] = (df_titulos['vencimento'] - df_titulos['data_base']).dt.days / 365.25
 
 # --- HEADER ---
 c1, c2 = st.columns([1, 5])
@@ -83,6 +92,7 @@ with tab1:
         df_curve = df_titulos[df_titulos['indexador'].isin(['PREFIXADO', 'IPCA'])].copy()
         
         if not df_curve.empty:
+            # AGORA VAI FUNCIONAR POIS CRIAMOS A COLUNA ACIMA
             fig = px.line(
                 df_curve.sort_values('prazo_anos'), 
                 x="vencimento", 
@@ -135,7 +145,7 @@ with tab2:
     else:
         st.warning("Sem dados para calcular Breakeven.")
 
-# --- TAB 3: FOCUS (O PROBLEMA) ---
+# --- TAB 3: FOCUS ---
 with tab3:
     st.markdown("### Expectativas de Mercado (Banco Central)")
     
@@ -151,12 +161,10 @@ with tab3:
         </div>
         """, unsafe_allow_html=True)
         
-        # Pivot table para exibição
-        # Colunas: DataReferencia (2026, 2027...) | Linhas: Indicador (IPCA, Selic)
         try:
             # Filtra apenas o que interessa
             df_view = df_focus[df_focus['Indicador'].isin(['IPCA', 'Selic', 'PIB Total', 'Câmbio'])].copy()
-            df_view = df_view[df_view['DataReferencia'].isin([2026, 2027, 2028])] # Próximos anos
+            df_view = df_view[df_view['DataReferencia'].isin([2026, 2027, 2028])] 
             
             pivoted = df_view.pivot_table(index='Indicador', columns='DataReferencia', values='Mediana', aggfunc='first')
             st.dataframe(pivoted.style.format("{:.2f}"), use_container_width=True)
@@ -165,7 +173,6 @@ with tab3:
             
         except Exception as e:
             st.error(f"Erro ao processar tabela Focus: {e}")
-            st.write(df_focus.head())
     else:
         st.error("⚠️ Arquivo do Boletim Focus não encontrado.")
         st.info("Vá até a Home e clique em 'Forçar Atualização' para baixar os dados.")

@@ -2,6 +2,7 @@ import sys
 import os
 import requests
 import pandas as pd
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +18,7 @@ except ImportError:
     DATA_DIR = Path(root_dir) / "data"
     PROCESSED_DIR = DATA_DIR / "processed"
 
-# URL DA API OFICIAL DO TESOURO (A FONTE DA VERDADE)
+# URL DA API OFICIAL DO TESOURO
 URL_OFICIAL = "https://www.tesourodireto.com.br/json/br/com/b3/tesourodireto/service/api/treasurybondsinfo.json"
 
 def main():
@@ -26,14 +27,20 @@ def main():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     
     try:
-        # Headers para fingir ser um navegador comum e evitar bloqueios
+        # --- CACHE BUSTER (O TRUQUE) ---
+        # Adiciona um timestamp na URL para obrigar o servidor a mandar dados novos
+        timestamp = int(time.time())
+        url_com_cachebuster = f"{URL_OFICIAL}?_={timestamp}"
+        
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.tesourodireto.com.br/"
+            "Referer": "https://www.tesourodireto.com.br/",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache"
         }
         
-        # Timeout curto para testar rápido
-        response = requests.get(URL_OFICIAL, headers=headers, timeout=20, verify=True)
+        print(f"📡 Baixando de: {url_com_cachebuster}")
+        response = requests.get(url_com_cachebuster, headers=headers, timeout=20, verify=True)
         response.raise_for_status()
         
         data_json = response.json()
@@ -51,13 +58,16 @@ def main():
         
         for item in lista_titulos:
             try:
+                trsr = item.get("TrsrBd", {})
+                
                 # Mapeamento dos campos oficiais
-                nome_titulo = item.get("TrsrBd", {}).get("nm")
-                vencimento_str = item.get("TrsrBd", {}).get("mtrtyDt") # Vem como "2029-05-15T00:00:00"
-                taxa_compra = item.get("TrsrBd", {}).get("anulInvstmtRate", 0.0)
-                pu_compra = item.get("TrsrBd", {}).get("untrInvstmtVal", 0.0)
-                taxa_venda = item.get("TrsrBd", {}).get("anulRedRate", 0.0)
-                pu_venda = item.get("TrsrBd", {}).get("untrRedVal", 0.0)
+                nome_titulo = trsr.get("nm")
+                vencimento_str = trsr.get("mtrtyDt") # Vem como "2029-05-15T00:00:00"
+                taxa_compra = trsr.get("anulInvstmtRate", 0.0)
+                pu_compra = trsr.get("untrInvstmtVal", 0.0)
+                taxa_venda = trsr.get("anulRedRate", 0.0)
+                pu_venda = trsr.get("untrRedVal", 0.0)
+                minimo = trsr.get("minInvstmtAmt", 30.0) # Valor mínimo oficial
                 
                 # Tratamento de Data
                 if vencimento_str:
@@ -79,11 +89,12 @@ def main():
                 dados_processados.append({
                     "tipo_titulo": nome_titulo,
                     "vencimento": dt_venc,
-                    "data_base": datetime.now(),
+                    "data_base": datetime.now(), # Carimbo de quando baixamos
                     "taxa_compra": float(taxa_compra),
                     "pu_compra": float(pu_compra),
                     "taxa_venda": float(taxa_venda),
                     "pu_venda": float(pu_venda),
+                    "minimo_compra": float(minimo),
                     "indexador": indexador,
                     "ano_vencimento": dt_venc.year
                 })
@@ -94,19 +105,25 @@ def main():
         # Salva o arquivo
         df = pd.DataFrame(dados_processados)
         
-        # Garante que tem dados
         if df.empty:
             print("❌ Erro: DataFrame vazio após processamento.")
             return
 
+        # DATA NO NOME DO ARQUIVO
+        # Importante: O nome muda a cada dia, garantindo histórico
         hoje_iso = datetime.now().date().isoformat()
         arquivo_saida = PROCESSED_DIR / f"tesouro_catalogo_{hoje_iso}.parquet"
         
         df.to_parquet(arquivo_saida, index=False)
-        print(f"💾 SUCESSO! Arquivo Oficial Salvo: {arquivo_saida}")
+        print(f"💾 SUCESSO! Arquivo salvo em: {arquivo_saida}")
         
-        # Preview
-        print(df[['tipo_titulo', 'taxa_compra', 'pu_compra']].head(3))
+        # --- PREVIEW PARA VOCÊ CONFERIR NO LOG ---
+        print("\n📊 --- PREVIEW DOS DADOS BAIXADOS AGORA ---")
+        preview = df[df['tipo_titulo'].str.contains('IPCA+ 2029')][['tipo_titulo', 'taxa_compra']]
+        if not preview.empty:
+            print(f"🔎 {preview.iloc[0]['tipo_titulo']} -> Taxa: {preview.iloc[0]['taxa_compra']}%")
+        else:
+            print(df[['tipo_titulo', 'taxa_compra']].head(3))
 
     except Exception as e:
         print(f"❌ Erro Crítico na API Oficial: {e}")

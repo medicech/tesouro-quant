@@ -19,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS PREMIUM FINTECH (SEU DESIGN PREFERIDO) ---
+# --- CSS (Mantendo o estilo Premium que você gosta) ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
@@ -27,48 +27,20 @@ st.markdown("""
     .stApp { background-color: #F0F2F6; font-family: 'Inter', sans-serif; }
     h1, h2, h3, h4, h5, p, label, div { font-family: 'Inter', sans-serif !important; color: #333; }
     
-    /* Esconde menu padrão */
+    /* Sidebar */
+    [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E0E0; }
     [data-testid="stSidebarNav"] { display: none !important; }
     
-    /* Sidebar customizada */
-    [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E0E0; }
-    
-    /* Inputs */
-    .stSelectbox > div > div, .stMultiSelect > div > div, .stNumberInput > div > div {
-        background-color: #FFFFFF; color: #333; border: 1px solid #E0E0E0; border-radius: 8px;
-    }
-
-    /* Tabs (Abas) Estilizadas Clean */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 20px;
-        background-color: transparent;
-        border-bottom: 1px solid #E0E0E0;
-        padding-bottom: 5px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        background-color: transparent;
-        border: none;
-        color: #666;
-        font-weight: 400;
-        font-size: 14px;
-        padding: 10px 0;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #002B49 !important;
-        font-weight: 700 !important;
-        border-bottom: 3px solid #002B49 !important;
-    }
-
-    /* Cards Brancos */
+    /* Cards Brancos (Para Gráficos) */
     .chart-card {
         background-color: white;
-        padding: 24px;
+        padding: 20px;
         border-radius: 12px;
         border: 1px solid #E0E0E0;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02);
         margin-bottom: 20px;
     }
-
+    
     /* Botão Voltar */
     .secondary-btn button {
         background-color: transparent !important;
@@ -78,11 +50,10 @@ st.markdown("""
         font-weight: 600;
     }
     .secondary-btn button:hover { background-color: #E6EBF0 !important; }
-
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNÇÃO DE CARGA (Sua Lógica Atual) ---
+# --- FUNÇÃO DE CARGA ---
 def carregar_arquivo(nome_arquivo):
     for root in possible_roots:
         path = root / "data" / "processed" / nome_arquivo
@@ -109,7 +80,7 @@ if not df_titulos.empty:
     
     df_titulos['prazo_anos'] = (df_titulos['vencimento'] - df_titulos['data_base']).dt.days / 365.25
 
-# --- SIDEBAR (Seu Design Antigo) ---
+# --- SIDEBAR ---
 def render_sidebar():
     with st.sidebar:
         st.markdown("<h3 style='color: #002B49;'>TESOURO QUANT</h3>", unsafe_allow_html=True)
@@ -139,42 +110,42 @@ def render():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- TABS (Breakeven REMOVIDO) ---
+    # --- TABS (SEM BREAKEVEN) ---
     tab1, tab2 = st.tabs(["📉 Curva de Juros (Nominal)", "🔮 Boletim Focus"])
 
-    # === ABA 1: CURVA DE JUROS (Funcionalidade Nova + Design Antigo) ===
+    # === ABA 1: CURVA DE JUROS ===
     with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
         
         if not df_titulos.empty:
             
-            # PAINEL DE CONTROLE (Estilo Card)
-            st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
-            st.markdown("<h4 style='color: #002B49; margin-bottom: 20px;'>⚙️ Painel de Controle</h4>", unsafe_allow_html=True)
+            # --- ÁREA DE FILTROS E INPUTS (SOLTA NA PÁGINA, IGUAL ANTES) ---
+            # 1. Inputs de Simulação
+            with st.container():
+                st.markdown("#### ⚙️ Parâmetros de Simulação")
+                st.caption("Defina suas premissas para converter taxas reais em nominais.")
+                
+                c_input1, c_input2 = st.columns(2)
+                user_ipca = c_input1.number_input("IPCA Projetado (% a.a.)", value=4.0, step=0.1)
+                user_selic = c_input2.number_input("Selic Média (% a.a.)", value=10.0, step=0.25)
             
-            # Linha 1: Premissas
-            c_input1, c_input2 = st.columns(2)
-            user_ipca = c_input1.number_input("IPCA Projetado (% a.a.)", value=4.0, step=0.1, help="Converte IPCA+ em Nominal")
-            user_selic = c_input2.number_input("Selic Média (% a.a.)", value=10.0, step=0.25, help="Define retorno do Tesouro Selic")
+            st.markdown("---")
             
-            st.markdown("<hr style='margin: 20px 0; border: 0; border-top: 1px solid #E0E0E0;'>", unsafe_allow_html=True)
-            
-            # Linha 2: Filtros
+            # 2. Filtros de Títulos (Visualização Padrão do Streamlit)
             c_filt1, c_filt2 = st.columns(2)
             
-            # Filtro 1: Indexador
+            # Filtro Indexador
             all_indexes = df_titulos['indexador'].unique()
             sel_indexes = c_filt1.multiselect("1. Filtrar Família", all_indexes, default=['PREFIXADO', 'IPCA'])
             
-            # Filtro 2: Títulos (Dinâmico)
+            # Filtro Títulos
             df_step1 = df_titulos[df_titulos['indexador'].isin(sel_indexes)]
             all_titles = sorted(df_step1['tipo_titulo'].unique())
-            
             default_titles = [t for t in all_titles if "Renda+" not in t and "Educa+" not in t]
+            
             sel_titles = c_filt2.multiselect("2. Selecionar Títulos Específicos", all_titles, default=default_titles)
-            st.markdown("</div>", unsafe_allow_html=True) # Fim do Card
 
-            # --- PROCESSAMENTO DO GRÁFICO ---
+            # --- PROCESSAMENTO ---
             df_chart = df_step1[df_step1['tipo_titulo'].isin(sel_titles)].copy()
 
             def calcular_nominal(row):
@@ -196,32 +167,31 @@ def render():
                     lambda x: pd.Series(calcular_nominal(x)), axis=1
                 )
 
+                # --- GRÁFICO (DENTRO DO CARD BRANCO) ---
                 st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
                 
-                # GRÁFICO (COM TEXTO DA TAXA DE VOLTA!)
                 fig = px.line(
                     df_chart.sort_values('prazo_anos'), 
                     x="vencimento", 
                     y="taxa_projetada", 
                     color="indexador",
                     markers=True,
-                    text="taxa_projetada", # <--- AQUI ESTÁ A CORREÇÃO: Exibe a taxa na linha
+                    text="taxa_projetada", # <--- AQUI: TRAZENDO A TAXA DE VOLTA AO GRÁFICO
                     title=f"<b>Curva Nominal</b> (IPCA {user_ipca}% | Selic {user_selic}%)",
                     labels={"taxa_projetada": "Taxa Nominal (% a.a.)", "vencimento": "Vencimento"},
                     color_discrete_map={"PREFIXADO": "#D32F2F", "IPCA": "#1976D2", "SELIC": "#388E3C"},
                     custom_data=['tipo_titulo', 'detalhe_taxa']
                 )
                 
-                # Formata o texto para aparecer "12.50%" em cima da bolinha
+                # Configuração Visual para mostrar a taxa em cima da linha
                 fig.update_traces(
                     textposition="top center", 
-                    texttemplate='%{text:.2f}%',
+                    texttemplate='%{text:.2f}%', # Formata com 2 casas decimais e %
                     hovertemplate="<b>%{customdata[0]}</b><br>%{x|%d/%m/%Y}<br>Taxa: %{y:.2f}%<br><i>%{customdata[1]}</i>"
                 )
                 
-                # Layout Premium
                 fig.update_layout(
-                    height=500, 
+                    height=550, 
                     hovermode="x unified",
                     template="plotly_white",
                     paper_bgcolor='rgba(0,0,0,0)',
@@ -229,8 +199,6 @@ def render():
                     font=dict(family="Inter", color="#333"),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
-                fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#F0F0F0')
-                fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#F0F0F0')
                 
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)

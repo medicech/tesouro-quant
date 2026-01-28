@@ -25,10 +25,9 @@ def main():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     
     try:
-        # Query otimizada para pegar os últimos dados de IPCA
-        # Top 100 garante que pegamos o último relatório mesmo se tiver sujeira
+        # Pega os últimos 100 registros para garantir que encontramos a data mais nova
         query = "?$filter=Indicador eq 'IPCA'&$top=100&$orderby=Data desc&$format=json"
-        url = URL_FOCUS + query.replace(" ", "%20") # Garante URL encoded
+        url = URL_FOCUS + query.replace(" ", "%20")
         
         response = requests.get(url, timeout=15)
         
@@ -43,26 +42,19 @@ def main():
             print("❌ Erro: Lista vazia do Focus.")
             sys.exit(1)
 
-        # 2. Processar
+        # Processamento
         df = pd.DataFrame(valores)
         df['Data'] = pd.to_datetime(df['Data'])
         df['DataReferencia'] = pd.to_numeric(df['DataReferencia'], errors='coerce')
         
-        # Pega a data de divulgação mais recente (O "Hoje" do relatório)
+        # 1. Descobre qual é a data de publicação mais recente no BC
         ultima_divulgacao = df['Data'].max()
         
-        # Filtra apenas as previsões desse último relatório
+        # 2. Filtra apenas as previsões feitas nessa data
         df_recente = df[df['Data'] == ultima_divulgacao].copy()
         
-        print(f"✅ Focus Processado. Data do Relatório: {ultima_divulgacao.strftime('%d/%m/%Y')}")
+        print(f"✅ Focus Processado. Relatório Mais Recente: {ultima_divulgacao.strftime('%d/%m/%Y')}")
         
-        # Preview
-        try:
-            # Tenta mostrar a meta para 2026
-            meta_26 = df_recente[df_recente['DataReferencia'] == 2026]['Mediana'].iloc[0]
-            print(f"   Previsão IPCA 2026: {meta_26}%")
-        except: pass
-
         # 3. Salvar
         arquivo_saida = PROCESSED_DIR / "focus_ipca.parquet"
         

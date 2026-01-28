@@ -3,6 +3,7 @@ import os
 import streamlit as st
 import pandas as pd
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -98,9 +99,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNÇÃO ATUALIZAR (COM A LÓGICA DE CACHE CORRIGIDA) ---
+# --- FUNÇÃO ATUALIZAR (COM DEBUG DE ERRO NA TELA) ---
 def atualizar_dados():
-    with st.status("🔄 Sincronizando Base de Dados...", expanded=True) as status:
+    with st.status("🔄 Conectando aos servidores do Governo...", expanded=True) as status:
         erros = []
         
         # Caminho absoluto para a pasta scripts
@@ -114,30 +115,44 @@ def atualizar_dados():
         ]
 
         for nome, script_file in scripts:
-            st.write(f"📡 Atualizando {nome}...")
+            st.write(f"📡 Baixando {nome}...")
             try:
                 full_path = os.path.join(scripts_path, script_file)
-                # Usa sys.executable para garantir que rode no mesmo ambiente Python da Nuvem
-                result = subprocess.run([sys.executable, full_path], capture_output=True, text=True)
                 
-                if result.returncode != 0:
-                    erros.append(f"{nome}: {result.stderr}")
+                # CAPTURA O OUTPUT COMPLETO (STDOUT + STDERR)
+                # Usa sys.executable para garantir que rode no mesmo ambiente Python da Nuvem
+                result = subprocess.run(
+                    [sys.executable, full_path], 
+                    capture_output=True, 
+                    text=True
+                )
+                
+                # VERIFICAÇÃO DE ERRO REFORÇADA:
+                # Se o returncode for diferente de 0 OU se o script imprimiu "Erro" ou "Exception"
+                if result.returncode != 0 or "Erro" in result.stdout or "Exception" in result.stdout:
+                    msg_erro = result.stderr if result.stderr else result.stdout
+                    erros.append(f"❌ {nome}: Falha na execução")
+                    st.error(f"Erro no script {nome}:")
+                    # Mostra o log real para você debugar
+                    st.code(result.stdout if result.stdout else result.stderr) 
                 else:
                     st.write(f"✅ {nome} ok.")
+                    
             except Exception as e:
                 erros.append(f"{nome}: {str(e)}")
+                st.error(f"Erro crítico ao tentar rodar {nome}: {e}")
         
         if not erros:
             # O SEGREDO DO SUCESSO: LIMPAR O CACHE
             st.cache_data.clear()
             
-            status.update(label="✅ Tudo pronto! Recarregando...", state="complete", expanded=False)
+            status.update(label="✅ SUCESSO! Base Atualizada. Recarregando...", state="complete", expanded=False)
             st.toast("Base de dados 100% atualizada!", icon="🚀")
+            time.sleep(1) # Dá um tempinho para ler a mensagem
             st.rerun()
         else:
             status.update(label="❌ Erro na atualização", state="error")
-            for err in erros:
-                st.error(err)
+            st.error("A atualização falhou. Verifique os logs acima.")
 
 # --- RENDERIZAÇÃO DA SIDEBAR ---
 def render_sidebar():

@@ -24,9 +24,8 @@ def main():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     
     try:
-        # CORREÇÃO: Agora pedimos IPCA *OU* Selic na query
-        # Trazemos mais registros (top 200) para garantir os dois indicadores
-        query = "?$filter=(Indicador eq 'IPCA' or Indicador eq 'Selic')&$top=200&$orderby=Data desc&$format=json"
+        # Aumentei o top para 500 para garantir que pegue Selic e IPCA de todos os anos
+        query = "?$filter=(Indicador eq 'IPCA' or Indicador eq 'Selic')&$top=500&$orderby=Data desc&$format=json"
         url = URL_FOCUS + query.replace(" ", "%20")
         
         response = requests.get(url, timeout=15)
@@ -46,11 +45,15 @@ def main():
         # Pega a data mais recente
         ultima_divulgacao = df['Data'].max()
         
-        # Filtra apenas dados dessa data
+        # Filtra apenas dados dessa data (IPCA e SELIC)
         df_recente = df[df['Data'] == ultima_divulgacao].copy()
         
         print(f"✅ Focus Processado. Relatório: {ultima_divulgacao.strftime('%d/%m/%Y')}")
-        print(f"   Indicadores encontrados: {df_recente['Indicador'].unique()}")
+        unique_inds = df_recente['Indicador'].unique()
+        print(f"   Indicadores encontrados: {unique_inds}")
+        
+        if 'Selic' not in unique_inds:
+            print("⚠️ AVISO: Selic não foi encontrada no retorno da API!")
 
         arquivo_saida = PROCESSED_DIR / "focus_ipca.parquet"
         

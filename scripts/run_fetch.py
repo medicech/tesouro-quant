@@ -2,12 +2,12 @@ import sys
 import os
 import requests
 import pandas as pd
-import time
-import json
+from bs4 import BeautifulSoup
 from datetime import datetime
+import re
 from pathlib import Path
 
-# --- CONFIGURAÇÃO DE PATH ---
+# --- CONFIGURAÇÃO DE CAMINHOS (CRÍTICO PARA NUVEM) ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.append(os.path.join(root_dir, "src"))
@@ -19,93 +19,127 @@ except ImportError:
     DATA_DIR = Path(root_dir) / "data"
     PROCESSED_DIR = DATA_DIR / "processed"
 
-# URL OFICIAL (CACHE BUSTING)
-URL_OFICIAL = "https://www.tesourodireto.com.br/json/br/com/b3/tesourodireto/service/api/treasurybondsinfo.json"
+# --- CONFIGURAÇÕES ---
+URL_ALVO = "https://investidor10.com.br/tesouro-direto/"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+}
+
+# --- FUNÇÕES DE LIMPEZA ---
+def clean_money(text):
+    """Transforma 'R$ 1.234,56' em float 1234.56"""
+    if not text: return 0.0
+    clean = text.replace('R$', '').replace('.', '').replace(',', '.').strip()
+    try: return float(clean)
+    except: return 0.0
+
+def clean_rate(text):
+    """Transforma 'IPCA + 6,50%' em float 6.50"""
+    if not text: return 0.0
+    match = re.search(r'([\d,]+)%', text)
+    if match:
+        clean = match.group(1).replace(',', '.')
+        return float(clean)
+    clean = text.replace('%', '').replace(',', '.').strip()
+    try: return float(clean)
+    except: return 0.0
 
 def main():
-    print("🚀 Iniciando Download do Tesouro Direto...")
+    print("🕵️‍♂️ Iniciando Scraping do Investidor10 (Produção)...")
     
     # Garante que a pasta existe
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     
-    # 1. TENTA BAIXAR COM HEADERS DE NAVEGADOR REAL
     try:
-        # Cache Buster: Adiciona timestamp para não pegar arquivo velho
-        timestamp = int(time.time())
-        url = f"{URL_OFICIAL}?_={timestamp}"
+        # 1. Requisição
+        response = requests.get(URL_ALVO, headers=HEADERS, timeout=20)
+        response.raise_for_status()
         
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Referer": "https://www.tesourodireto.com.br/titulos/precos-e-taxas.htm",
-            "Origin": "https://www.tesourodireto.com.br",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache"
-        }
+        # 2. Parse HTML
+        soup = BeautifulSoup(response.content, 'html.parser')
         
-        print(f"📡 Conectando em: {url}")
-        response = requests.get(url, headers=headers, timeout=25, verify=True)
-        
-        if response.status_code != 200:
-            print(f"❌ Erro HTTP {response.status_code}: {response.text[:200]}")
-            sys.exit(1) # FORÇA O ERRO NO STREAMLIT
+        # Tenta achar a tabela (id com erro de digitação do site ou classe genérica)
+        table = soup.find('table', {'id': 'rankigns'})
+        if not table:
+            table = soup.find('table', {'class': 'table'})
+            
+        if not table:
+            print("❌ Erro: Tabela não encontrada no HTML.")
+            sys.exit(1) # Força erro no Streamlit
 
-        data_json = response.json()
-        lista_titulos = data_json.get("response", {}).get("TrsrBdTradgList", [])
+        rows = table.find('tbody').find_all('tr')
+        print(f"✅ Encontradas {len(rows)} linhas.")
         
-        if not lista_titulos:
-            print("❌ Erro: API retornou lista vazia (Provável Bloqueio ou Feriado).")
-            # Dump para debug se precisar
-            print(f"Conteúdo recebido: {str(data_json)[:500]}")
-            sys.exit(1) # FORÇA O ERRO
-
-        print(f"✅ Recebidos {len(lista_titulos)} títulos.")
-
-        # 2. PROCESSAMENTO
         dados_processados = []
-        for item in lista_titulos:
+        
+        for tr in rows:
+            cols = tr.find_all('td')
+            if len(cols) < 6: continue
+            
+            # Mapeamento Investidor10:
+            # 1: Nome | 2: Rentabilidade | 3: Mínimo | 4: Preço | 5: Vencimento
+            nome = cols[1].get_text().strip()
+            rentabilidade = cols[2].get_text().strip()
+            minimo = cols[3].get_text().strip()
+            preco = cols[4].get_text().strip()
+            vencimento = cols[5].get_text().strip()
+            
+            if not nome or "Título" in nome: continue
+            
+            # Tratamento de Data
             try:
-                trsr = item.get("TrsrBd", {})
-                dados_processados.append({
-                    "tipo_titulo": trsr.get("nm"),
-                    "vencimento": pd.to_datetime(trsr.get("mtrtyDt")).replace(tzinfo=None),
-                    "data_base": datetime.now(), # CARIMBO DE AGORA
-                    "taxa_compra": float(trsr.get("anulInvstmtRate", 0.0)),
-                    "pu_compra": float(trsr.get("untrInvstmtVal", 0.0)),
-                    "taxa_venda": float(trsr.get("anulRedRate", 0.0)),
-                    "pu_venda": float(trsr.get("untrRedVal", 0.0)),
-                    "minimo_compra": float(trsr.get("minInvstmtAmt", 30.0)),
-                    "indexador": "IPCA" if "IPCA" in trsr.get("nm", "").upper() else ("SELIC" if "SELIC" in trsr.get("nm", "").upper() else "PREFIXADO"),
-                    "ano_vencimento": pd.to_datetime(trsr.get("mtrtyDt")).year
-                })
-            except: continue
+                dt_venc = pd.to_datetime(vencimento, dayfirst=True)
+            except:
+                continue
+
+            # Classificação do Indexador (Essencial para os filtros do site)
+            nome_upper = nome.upper()
+            if "IPCA" in nome_upper or "RENDA+" in nome_upper or "EDUCA+" in nome_upper:
+                indexador = "IPCA"
+            elif "SELIC" in nome_upper:
+                indexador = "SELIC"
+            elif "PREFIXADO" in nome_upper:
+                indexador = "PREFIXADO"
+            else:
+                indexador = "OUTROS"
+
+            dados_processados.append({
+                "tipo_titulo": nome,
+                "vencimento": dt_venc,
+                "data_base": datetime.now(),
+                "taxa_compra": clean_rate(rentabilidade),
+                "pu_compra": clean_money(preco),
+                "minimo_compra": clean_money(minimo),
+                "taxa_venda": 0.0, # Site não fornece fácil
+                "pu_venda": 0.0,   # Site não fornece fácil
+                "indexador": indexador,
+                "ano_vencimento": dt_venc.year
+            })
 
         if not dados_processados:
-            print("❌ Erro: Falha ao processar dados.")
+            print("❌ Erro: Nenhum dado extraído.")
             sys.exit(1)
 
-        df = pd.DataFrame(dados_processados)
-
-        # 3. SALVAMENTO (COM REMOÇÃO DE ANTIGOS PARA FORÇAR ATUALIZAÇÃO)
-        # Remove arquivos antigos do dia para garantir que só tenha o novo
+        # 3. Limpeza e Salvamento
+        # Remove arquivos antigos para o site não ler dado velho
         for f in PROCESSED_DIR.glob("tesouro_catalogo_*.parquet"):
             try: os.remove(f)
             except: pass
-        
+
+        df = pd.DataFrame(dados_processados)
         hoje_iso = datetime.now().date().isoformat()
         arquivo_saida = PROCESSED_DIR / f"tesouro_catalogo_{hoje_iso}.parquet"
+        
         df.to_parquet(arquivo_saida, index=False)
+        print(f"💾 SUCESSO! Salvo em: {arquivo_saida}")
         
-        print(f"💾 ARQUIVO SALVO: {arquivo_saida}")
-        
-        # PROVA REAL NO LOG
-        ipca_29 = df[df['tipo_titulo'].str.contains('IPCA+ 2029')]
-        if not ipca_29.empty:
-            print(f"🔍 PROVA: IPCA+ 2029 está pagando {ipca_29.iloc[0]['taxa_compra']}%")
+        # Preview no Log do Streamlit
+        print("📊 Amostra:")
+        print(df[['tipo_titulo', 'taxa_compra', 'pu_compra']].head(3))
 
     except Exception as e:
-        print(f"❌ Erro Crítico: {str(e)}")
-        sys.exit(1) # FORÇA O ERRO
+        print(f"❌ Erro Crítico: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

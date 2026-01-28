@@ -27,7 +27,6 @@ def carregar_arquivo(nome_arquivo):
 df_focus, _ = carregar_arquivo("focus_ipca.parquet")
 df_titulos, _ = carregar_arquivo("tesouro_catalogo_2026-01-28.parquet")
 if df_titulos.empty:
-    # Fallback para qualquer catalogo
     try:
         p = Path("data/processed")
         files = sorted(list(p.glob("tesouro_catalogo_*.parquet")))
@@ -43,7 +42,7 @@ if not df_titulos.empty:
     # Cria coluna prazo
     df_titulos['prazo_anos'] = (df_titulos['vencimento'] - df_titulos['data_base']).dt.days / 365.25
     
-    # Cria rótulo amigável para o filtro
+    # Cria rótulo amigável
     df_titulos['label_filtro'] = df_titulos['tipo_titulo'] + " (" + df_titulos['vencimento'].dt.year.astype(str) + ")"
 
 # --- HEADER ---
@@ -57,29 +56,20 @@ with c2:
 # --- TABS ---
 tab1, tab2, tab3 = st.tabs(["📉 Curva de Juros (ETTJ)", "🎈 Breakeven de Inflação", "🔮 Boletim Focus"])
 
-# --- TAB 1: CURVA DE JUROS COM FILTROS ---
+# --- TAB 1: CURVA DE JUROS ---
 with tab1:
     if not df_titulos.empty:
-        # --- ÁREA DE FILTROS ---
         with st.expander("⚙️ Configurações do Gráfico (Filtros)", expanded=True):
             col_f1, col_f2 = st.columns(2)
-            
-            # 1. Filtro de Indexador
             all_indexes = df_titulos['indexador'].unique()
             sel_indexes = col_f1.multiselect("Indexadores", all_indexes, default=['PREFIXADO', 'IPCA'])
             
-            # 2. Filtro de Títulos Específicos
-            # Filtra primeiro pelo indexador escolhido
             df_step1 = df_titulos[df_titulos['indexador'].isin(sel_indexes)]
             all_titles = df_step1['tipo_titulo'].unique()
-            
-            # Sugere padrão: Remove Renda+ e Educa+ para não poluir, deixa só os principais
             default_titles = [t for t in all_titles if "Renda+" not in t and "Educa+" not in t]
             
             sel_titles = col_f2.multiselect("Selecionar Títulos", all_titles, default=default_titles)
         
-        # --- GRÁFICO ---
-        # Aplica filtros finais
         df_chart = df_step1[df_step1['tipo_titulo'].isin(sel_titles)].copy()
         
         if not df_chart.empty:
@@ -88,7 +78,7 @@ with tab1:
                 x="vencimento", 
                 y="taxa_compra", 
                 color="indexador",
-                text="taxa_compra", # Mostra o valor no ponto
+                text="taxa_compra",
                 markers=True,
                 title="Curva de Juros (ETTJ)",
                 color_discrete_map={"PREFIXADO": "#D32F2F", "IPCA": "#1976D2", "SELIC": "#388E3C"}
@@ -98,7 +88,6 @@ with tab1:
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("Nenhum título selecionado.")
-            
     else:
         st.error("Sem dados de títulos.")
 
@@ -108,40 +97,51 @@ with tab2:
     st.info("💡 Diferença de taxa entre Prefixados e IPCA+ de mesmo vencimento.")
     
     if not df_titulos.empty:
-        # Lógica simplificada
-        df_pre = df_titulos[df_titulos['indexador'] == 'PREFIXADO'][['ano_vencimento', 'taxa_compra']].groupby('ano_vencimento').mean()
-        df_ipca = df_titulos[df_titulos['indexador'] == 'IPCA'][['ano_vencimento', 'taxa_compra']].groupby('ano_vencimento').mean()
-        
-        df_break = df_pre.join(df_ipca, lsuffix='_pre', rsuffix='_ipca', how='inner')
-        df_break['breakeven'] = (((1 + df_break['taxa_compra_pre']/100) / (1 + df_break['taxa_compra_ipca']/100)) - 1) * 100
-        
-        fig_break = px.bar(
-            df_break.reset_index(),
-            x='ano_vencimento', y='breakeven',
-            text_auto='.2f', title="Inflação Implícita (%)",
-            color_discrete_sequence=['#FFA000']
-        )
-        st.plotly_chart(fig_break, use_container_width=True)
+        # Filtra e agrupa
+        try:
+            df_pre = df_titulos[df_titulos['indexador'] == 'PREFIXADO'][['ano_vencimento', 'taxa_compra']].groupby('ano_vencimento').mean()
+            df_ipca = df_titulos[df_titulos['indexador'] == 'IPCA'][['ano_vencimento', 'taxa_compra']].groupby('ano_vencimento').mean()
+            
+            df_break = df_pre.join(df_ipca, lsuffix='_pre', rsuffix='_ipca', how='inner')
+            df_break['breakeven'] = (((1 + df_break['taxa_compra_pre']/100) / (1 + df_break['taxa_compra_ipca']/100)) - 1) * 100
+            
+            fig_break = px.bar(
+                df_break.reset_index(),
+                x='ano_vencimento', y='breakeven',
+                text_auto='.2f', title="Inflação Implícita (%)",
+                color_discrete_sequence=['#FFA000']
+            )
+            st.plotly_chart(fig_break, use_container_width=True)
+        except:
+            st.warning("Dados insuficientes para cálculo de Breakeven.")
 
-# --- TAB 3: FOCUS (AGORA COM SELIC) ---
+# --- TAB 3: FOCUS (CORRIGIDO) ---
 with tab3:
     st.markdown("### Expectativas de Mercado (Banco Central)")
     
     if not df_focus.empty:
+        # Exibe a data do relatório (Agora correta: 23/01)
         data_rel = pd.to_datetime(df_focus['Data'].max()).strftime('%d/%m/%Y')
-        st.success(f"📅 Relatório Vigente: **{data_rel}**")
+        
+        st.markdown(f"""
+        <div style="background-color: white; padding: 15px; border-radius: 8px; border-left: 5px solid #002B49; margin-bottom: 20px;">
+            <span style="font-size: 12px; font-weight: bold; color: #666; text-transform: uppercase;">Relatório Vigente</span><br>
+            <span style="font-size: 28px; font-weight: 800; color: #002B49;">{data_rel}</span>
+        </div>
+        """, unsafe_allow_html=True)
         
         try:
-            # Filtra indicadores (Agora Selic vai aparecer se o robô trouxe)
             df_view = df_focus[df_focus['Indicador'].isin(['IPCA', 'Selic'])].copy()
             df_view = df_view[df_view['DataReferencia'].isin([2026, 2027, 2028, 2029])]
             
             pivoted = df_view.pivot_table(index='Indicador', columns='DataReferencia', values='Mediana', aggfunc='first')
             
+            # REMOVIDO O .background_gradient() PARA EVITAR O ERRO
             st.dataframe(
-                pivoted.style.format("{:.2f}%").background_gradient(cmap="Blues", axis=1), 
+                pivoted.style.format("{:.2f}%"), 
                 use_container_width=True
             )
+            st.caption("Fonte: API Olinda/Bacen.")
         except Exception as e:
             st.error(f"Erro na tabela: {e}")
     else:

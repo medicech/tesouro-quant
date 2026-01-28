@@ -1,322 +1,171 @@
-from __future__ import annotations 
-
 import sys
 import os
-
-# --- CORREÇÃO DE PATH ---
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.abspath(os.path.join(current_dir, '../..')))
-sys.path.append(os.path.abspath(os.path.join(current_dir, '..')))
-# ------------------------
-
-import pandas as pd
 import streamlit as st
-import numpy as np
+import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
+from pathlib import Path
+from datetime import datetime
 
-from core.historico import load_history
-from core.ettj import build_ettj
-from core.expectativas import load_latest_expectativas_snapshot
+# --- CONFIGURAÇÃO DE CAMINHOS (BLINDAGEM) ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_dir))) # Volta até a raiz
+
+# Tenta caminhos diferentes para garantir
+possible_roots = [
+    Path(root_dir),
+    Path(os.getcwd()),
+    Path("/mount/src/tesouro-quant")
+]
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(
-    page_title="Macro Intelligence | Tesouro Quant", 
-    page_icon="🧠", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Macro Intelligence", page_icon="🌐", layout="wide")
 
-# --- CSS PREMIUM FINTECH ---
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
-    
-    .stApp { background-color: #F0F2F6; font-family: 'Inter', sans-serif; }
-    h1, h2, h3, h4, h5, p, label, div { font-family: 'Inter', sans-serif !important; color: #333; }
-    
-    /* Esconde menu padrão */
-    [data-testid="stSidebarNav"] { display: none !important; }
-    
-    /* Sidebar customizada */
-    [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E0E0; }
-    
-    /* Inputs */
-    .stSelectbox > div > div {
-        background-color: #FFFFFF; color: #333; border: 1px solid #E0E0E0; border-radius: 8px;
-    }
-
-    /* Tabs (Abas) Estilizadas Clean */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 20px;
-        background-color: transparent;
-        border-bottom: 1px solid #E0E0E0;
-        padding-bottom: 5px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        background-color: transparent;
-        border: none;
-        color: #666;
-        font-weight: 400;
-        font-size: 14px;
-        padding: 10px 0;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #002B49 !important;
-        font-weight: 700 !important;
-        border-bottom: 3px solid #002B49 !important;
-    }
-
-    /* Metrics */
-    [data-testid="stMetricValue"] {
-        font-family: 'Inter', sans-serif; color: #002B49 !important; font-weight: 700;
-    }
-    [data-testid="stMetricLabel"] {
-        color: #666 !important; font-size: 13px; text-transform: uppercase;
-    }
-
-    /* Cards Brancos para Gráficos */
-    .chart-card {
-        background-color: white;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #E0E0E0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-
-    /* Botão Voltar */
-    .secondary-btn button {
-        background-color: transparent !important;
-        color: #002B49 !important;
-        border: 2px solid #002B49 !important;
-        border-radius: 10px;
-        font-weight: 600;
-    }
-    .secondary-btn button:hover { background-color: #E6EBF0 !important; }
-
+    .stApp { background-color: #F0F2F6; }
+    .metric-card { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; }
+    .big-num { font-size: 24px; font-weight: bold; color: #002B49; }
+    .sub-text { font-size: 12px; color: #666; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Funções Auxiliares ---
-def _fmt_date(d):
-    return pd.to_datetime(d).strftime("%d/%m/%Y")
+# --- FUNÇÃO DE CARGA BLINDADA ---
+def carregar_arquivo(nome_arquivo):
+    """Busca o arquivo em todas as pastas possíveis"""
+    for root in possible_roots:
+        path = root / "data" / "processed" / nome_arquivo
+        if path.exists():
+            return pd.read_parquet(path), path
+        
+        # Tenta data/processed direto (local)
+        path_local = Path("data/processed") / nome_arquivo
+        if path_local.exists():
+            return pd.read_parquet(path_local), path_local
+            
+    return pd.DataFrame(), None
 
-# --- Sidebar ---
-def render_sidebar():
-    with st.sidebar:
-        st.markdown("<h3 style='color: #002B49;'>TESOURO QUANT</h3>", unsafe_allow_html=True)
-        st.caption("Terminal Inteligente v1.0")
-        st.markdown("---")
-        st.page_link("streamlit_app.py", label="Home", icon="🏠")
-        st.page_link("pages/titulos.py", label="Simulador", icon="📊")
-        st.page_link("pages/carteira.py", label="Minha Carteira", icon="🛡️")
-        st.page_link("pages/macro.py", label="Dados Macro", icon="🌐")
-        st.page_link("pages/consultor.py", label="Consultor U AI", icon="🤖")
-        st.markdown("---")
+# --- CARGA DE DADOS ---
+# 1. Carrega Focus (Inflação)
+df_focus, path_focus = carregar_arquivo("focus_ipca.parquet")
 
-def render():
-    render_sidebar()
-
-    # --- Header ---
-    c_back, c_title = st.columns([1, 5]) 
-    with c_back:
-        st.write("") 
-        st.markdown('<div class="secondary-btn">', unsafe_allow_html=True)
-        if st.button("⬅ Voltar"):
-            st.switch_page("streamlit_app.py")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with c_title:
-        st.markdown("<h1 style='margin-top: 0; font-size: 32px; color: #002B49;'>Macro Intelligence</h1>", unsafe_allow_html=True)
-        st.caption("Análise técnica da Estrutura a Termo (ETTJ), Inflação Implícita e Boletim Focus.")
-
-    # TABS
-    st.markdown("<br>", unsafe_allow_html=True)
-    tab1, tab2, tab3 = st.tabs(["📉 Curva de Juros (ETTJ)", "🎣 Breakeven de Inflação", "🔮 Boletim Focus"])
-
-    # Carregar histórico
+# 2. Carrega Curva de Juros (Do Catálogo Geral)
+# Precisamos do catálogo para desenhar a curva
+df_titulos, path_titulos = carregar_arquivo("tesouro_catalogo_2026-01-28.parquet") # Tenta data específica
+if df_titulos.empty:
+    # Se não achar com data fixa, tenta achar qualquer um
+    # Logica de busca do mais recente
     try:
-        hist = load_history().copy()
-        hist["data_base"] = pd.to_datetime(hist["data_base"])
-        hist["data_vencimento"] = pd.to_datetime(hist["data_vencimento"])
-        hist["prazo_dias"] = (hist["data_vencimento"] - hist["data_base"]).dt.days
-        hist["prazo_anos"] = hist["prazo_dias"] / 365.25
+        for root in possible_roots:
+            p = root / "data" / "processed"
+            if p.exists():
+                files = sorted(list(p.glob("tesouro_catalogo_*.parquet")))
+                if files:
+                    df_titulos = pd.read_parquet(files[-1])
+                    break
+    except: pass
+
+# --- HEADER ---
+c1, c2 = st.columns([1, 5])
+with c1:
+    if st.button("⬅ Voltar"): st.switch_page("streamlit_app.py")
+with c2:
+    st.title("Macro Intelligence")
+    st.caption("Análise técnica da Estrutura a Termo (ETTJ), Inflação Implícita e Boletim Focus.")
+
+# --- TABS ---
+tab1, tab2, tab3 = st.tabs(["📉 Curva de Juros (ETTJ)", "🎈 Breakeven de Inflação", "🔮 Boletim Focus"])
+
+# --- TAB 1: CURVA DE JUROS ---
+with tab1:
+    if not df_titulos.empty:
+        # Filtra Pre e IPCA
+        df_curve = df_titulos[df_titulos['indexador'].isin(['PREFIXADO', 'IPCA'])].copy()
         
-        for c in ["taxa_compra", "taxa_venda"]:
-            if c in hist.columns: hist[c] = pd.to_numeric(hist[c], errors="coerce")
-        
-        datas_disponiveis = sorted(hist["data_base"].unique())
-        data_mais_recente = datas_disponiveis[-1]
-    except Exception as e:
-        st.error(f"Erro ao processar histórico: {e}")
-        return
-
-    # === ABA 1: CURVA DE JUROS (ETTJ) ===
-    with tab1:
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Filtros em Card
-        with st.container():
-            c1, c2 = st.columns(2)
-            data_sel = c1.selectbox("Data Base", datas_disponiveis, index=len(datas_disponiveis)-1, format_func=_fmt_date)
-            indexador = c2.selectbox("Família", ["IPCA", "PREFIXADO"], index=1) 
-
-        # Processamento
-        df_day = hist[hist["data_base"] == data_sel].copy()
-        df_curve = df_day[df_day["indexador"] == indexador].copy()
-        
-        if indexador == "PREFIXADO":
-            df_curve = df_curve[df_curve["cupom_txt"] == "SEM CUPOM"]
-        else:
-            pass 
-
-        if len(df_curve) >= 3:
-            ettj = build_ettj(df_curve, modo="Compra")
-            vertices = ettj["vertices"]
-            curva_interp = ettj["curve"]
-
-            # Termômetro Slope
-            ponto_curto = curva_interp.iloc[0]
-            ponto_longo = curva_interp.iloc[-1]
-            taxa_curta = ponto_curto["taxa_interp"]
-            taxa_longa = ponto_longo["taxa_interp"]
-            spread = taxa_longa - taxa_curta 
-            spread_bps = spread * 100 
-            
-            if spread > 1.5: diagnostico = "Inclinação Alta (Prêmio de Risco)"
-            elif spread > 0: diagnostico = "Normal"
-            elif spread > -0.5: diagnostico = "Flat (Indecisão)"
-            else: diagnostico = "Invertida (Risco Recessão)"
-
-            st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Taxa Curta (1y)", f"{taxa_curta:.2f}%")
-            m2.metric("Taxa Longa (Terminal)", f"{taxa_longa:.2f}%")
-            m3.metric("Spread (Inclinação)", f"{spread_bps:.0f} bps", diagnostico)
-            st.markdown("</div>", unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # --- PLOTLY CHART (DESIGN NOVO) ---
-            st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
-            fig = go.Figure()
-            
-            # Pontos Reais (Dourado/Mustard)
-            fig.add_trace(go.Scatter(
-                x=vertices["prazo_anos"], y=vertices["taxa"],
-                mode='markers', name='Títulos Negociados', 
-                marker=dict(size=10, color='#CFA257', line=dict(width=1, color='white'))
-            ))
-            
-            # Curva Interpolada (Azul Navy)
-            fig.add_trace(go.Scatter(
-                x=curva_interp["prazo_anos"], y=curva_interp["taxa_interp"],
-                mode='lines', name='Curva Interpolada', 
-                line=dict(color='#002B49', width=3, shape='spline')
-            ))
-
-            fig.update_layout(
-                title=f"<b>Curva de Juros {indexador}</b> | {_fmt_date(data_sel)}",
-                xaxis_title="Prazo (Anos)", yaxis_title="Taxa (% a.a.)",
-                height=500,
-                template="plotly_white", # Fundo Branco Limpo
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(family="Inter", color="#333"),
-                hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        if not df_curve.empty:
+            fig = px.line(
+                df_curve.sort_values('prazo_anos'), 
+                x="vencimento", 
+                y="taxa_compra", 
+                color="indexador",
+                markers=True,
+                title="Estrutura a Termo da Taxa de Juros (ETTJ)",
+                labels={"taxa_compra": "Taxa (% a.a.)", "vencimento": "Vencimento"},
+                color_discrete_map={"PREFIXADO": "#D32F2F", "IPCA": "#1976D2"}
             )
-            # Gridlines suaves
-            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#F0F0F0')
-            fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#F0F0F0')
-            
+            fig.update_layout(hovermode="x unified", height=500)
             st.plotly_chart(fig, use_container_width=True)
-            st.markdown("</div>", unsafe_allow_html=True)
             
-            st.info("💡 **Conceito:** O 'Spread' mede a diferença entre o juro longo e o curto. Curvas muito inclinadas indicam que o mercado exige prêmio alto para emprestar a longo prazo (Risco Fiscal).")
+            # Data base da curva
+            data_base_str = pd.to_datetime(df_curve['data_base'].max()).strftime('%d/%m/%Y')
+            st.info(f"📅 Data base da Curva: **{data_base_str}**")
         else:
-            st.warning(f"Dados insuficientes ({len(df_curve)} títulos) nesta data.")
+            st.warning("Dados insuficientes para gerar a curva.")
+    else:
+        st.error("Não foi possível carregar os dados dos títulos.")
 
-    # === ABA 2: FISHER (Inflação Implícita) ===
-    with tab2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("##### Inflação Implícita (Breakeven)")
-        st.caption("Quanto o mercado precifica de inflação futura ao comparar títulos Prefixados vs IPCA+.")
+# --- TAB 2: BREAKEVEN ---
+with tab2:
+    st.markdown("### Inflação Implícita (Breakeven)")
+    st.write("Quanto o mercado precifica de inflação futura ao comparar títulos Prefixados vs IPCA+.")
+    
+    if not df_titulos.empty:
+        # Lógica simplificada de Breakeven (Matching por ano aproximado)
+        df_pre = df_titulos[df_titulos['indexador'] == 'PREFIXADO'][['ano_vencimento', 'taxa_compra']].set_index('ano_vencimento')
+        df_ipca = df_titulos[df_titulos['indexador'] == 'IPCA'][['ano_vencimento', 'taxa_compra']].set_index('ano_vencimento')
         
-        try:
-            df_pre = df_day[(df_day["indexador"] == "PREFIXADO") & (df_day["cupom_txt"] == "SEM CUPOM")]
-            df_ipca = df_day[(df_day["indexador"] == "IPCA") & (df_day["cupom_txt"] == "COM CUPOM")]
-            if len(df_ipca) < 2: df_ipca = df_day[(df_day["indexador"] == "IPCA") & (df_day["cupom_txt"] == "SEM CUPOM")]
-
-            if len(df_pre) >= 2 and len(df_ipca) >= 2:
-                ettj_nom = build_ettj(df_pre)["curve"]
-                ettj_real = build_ettj(df_ipca)["curve"]
-                merged = pd.merge(ettj_nom, ettj_real, on="prazo_anos", suffixes=("_nom", "_real"))
-                merged["inflacao_impl"] = ((1 + merged["taxa_interp_nom"]/100) / (1 + merged["taxa_interp_real"]/100) - 1) * 100
-                merged = merged[(merged["prazo_anos"] >= 1) & (merged["prazo_anos"] <= 10)]
-
-                if not merged.empty:
-                    st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
-                    fig2 = go.Figure()
-                    
-                    fig2.add_trace(go.Scatter(
-                        x=merged["prazo_anos"], y=merged["inflacao_impl"],
-                        mode='lines', name='IPCA Implícito', 
-                        line=dict(color='#002B49', width=3), 
-                        fill='tozeroy', fillcolor='rgba(0, 43, 73, 0.1)' # Azul Navy suave
-                    ))
-                    
-                    fig2.update_layout(
-                        title=f"<b>Inflação Implícita (Fisher)</b> - {_fmt_date(data_sel)}",
-                        xaxis_title="Prazo (Anos)", yaxis_title="IPCA Esperado (% a.a.)",
-                        height=500,
-                        template="plotly_white",
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        font=dict(family="Inter", color="#333"),
-                        hovermode="x unified"
-                    )
-                    fig2.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#F0F0F0')
-                    fig2.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#F0F0F0')
-
-                    st.plotly_chart(fig2, use_container_width=True)
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    
-                    ipca_medio = merged["inflacao_impl"].mean()
-                    st.success(f"📌 O mercado hoje precifica uma inflação média de **{ipca_medio:.2f}% a.a.** para a próxima década.")
-                else: st.warning("Sem sobreposição de prazos suficiente.")
-            else: st.warning("Não há pares suficientes de Prefixado/IPCA para calcular Fisher nesta data.")
-        except Exception as e: st.error(f"Erro em Fisher: {e}")
-
-    # === ABA 3: BOLETIM FOCUS ===
-    with tab3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("##### Expectativas de Mercado (Banco Central)")
+        # Cruzamento (Inner Join nos anos que tem os dois)
+        df_break = df_pre.join(df_ipca, lsuffix='_pre', rsuffix='_ipca', how='inner')
         
-        try:
-            df_focus = load_latest_expectativas_snapshot()
-            if not df_focus.empty:
-                data_focus = df_focus["data"].max()
-                
-                st.markdown(f"""
-                <div style="background-color: white; padding: 15px; border-radius: 8px; border: 1px solid #E0E0E0; display: inline-block; margin-bottom: 20px;">
-                    <span style="color: #666; font-size: 12px;">DATA DO RELATÓRIO</span><br>
-                    <span style="color: #002B49; font-size: 18px; font-weight: bold;">{_fmt_date(data_focus)}</span>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                focus_main = df_focus[df_focus["indicador"].isin(["IPCA", "Selic", "PIB Total", "Câmbio"])]
-                
-                if not focus_main.empty:
-                    pivot = focus_main.pivot_table(index="indicador", columns="ano", values="mediana")
-                    
-                    # Estilizando a tabela com Pandas Styler para ficar clean
-                    st.dataframe(
-                        pivot.style.format("{:.2f}"), 
-                        use_container_width=True
-                    )
-                    st.caption("Fonte: API Olinda/Bacen. Mediana das expectativas de mercado.")
-            else: st.warning("Dados do Focus não encontrados.")
-        except: st.error("Erro ao carregar Focus.")
+        # Fórmula de Fisher: (1 + Pre) = (1 + Real) * (1 + Implicita)
+        # Implicita = ((1 + Pre) / (1 + Real)) - 1
+        df_break['breakeven'] = (((1 + df_break['taxa_compra_pre']/100) / (1 + df_break['taxa_compra_ipca']/100)) - 1) * 100
+        
+        fig_break = px.bar(
+            df_break.reset_index(),
+            x='ano_vencimento',
+            y='breakeven',
+            text_auto='.2f',
+            title="Inflação Implícita por Vencimento",
+            color_discrete_sequence=['#FFA000']
+        )
+        fig_break.update_traces(textposition='outside')
+        fig_break.update_yaxes(title="Inflação Implícita (%)")
+        st.plotly_chart(fig_break, use_container_width=True)
+    else:
+        st.warning("Sem dados para calcular Breakeven.")
 
-if __name__ == "__main__":
-    render()
+# --- TAB 3: FOCUS (O PROBLEMA) ---
+with tab3:
+    st.markdown("### Expectativas de Mercado (Banco Central)")
+    
+    if not df_focus.empty:
+        # Pega a data mais recente do arquivo carregado
+        data_relatorio = pd.to_datetime(df_focus['Data'].max())
+        data_fmt = data_relatorio.strftime('%d/%m/%Y')
+        
+        st.markdown(f"""
+        <div style="background-color: white; padding: 15px; border-radius: 8px; border-left: 5px solid #002B49; margin-bottom: 20px;">
+            <span style="font-size: 12px; font-weight: bold; color: #666; text-transform: uppercase;">Data do Relatório</span><br>
+            <span style="font-size: 28px; font-weight: 800; color: #002B49;">{data_fmt}</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Pivot table para exibição
+        # Colunas: DataReferencia (2026, 2027...) | Linhas: Indicador (IPCA, Selic)
+        try:
+            # Filtra apenas o que interessa
+            df_view = df_focus[df_focus['Indicador'].isin(['IPCA', 'Selic', 'PIB Total', 'Câmbio'])].copy()
+            df_view = df_view[df_view['DataReferencia'].isin([2026, 2027, 2028])] # Próximos anos
+            
+            pivoted = df_view.pivot_table(index='Indicador', columns='DataReferencia', values='Mediana', aggfunc='first')
+            st.dataframe(pivoted.style.format("{:.2f}"), use_container_width=True)
+            
+            st.caption("Fonte: API Olinda/Bacen. Mediana das expectativas de mercado.")
+            
+        except Exception as e:
+            st.error(f"Erro ao processar tabela Focus: {e}")
+            st.write(df_focus.head())
+    else:
+        st.error("⚠️ Arquivo do Boletim Focus não encontrado.")
+        st.info("Vá até a Home e clique em 'Forçar Atualização' para baixar os dados.")
